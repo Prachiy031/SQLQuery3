@@ -1,488 +1,494 @@
-USE AdventureWorks;
+-- Task 1
 
---InsertOrderDetails Procedure
+CREATE DATABASE Task
 
-GO
+USE Task
 
-IF OBJECT_ID('Sales.SalesOrderDetail', 'U') IS NULL      --checks whether SalesOrderDetails table is already in schema or not (U :userdefined)
-BEGIN
-    PRINT 'The table SalesOrderDetails does not exist. Please create respective table first.';
-    RETURN;
-END;
-GO
+CREATE TABLE ProjectList
+( Task_ID INT PRIMARY KEY,
+  Start_Date DATE,
+  End_Date DATE
+)
 
-IF OBJECT_ID('dbo.InsertOrderDetails', 'P') IS NOT NULL
-DROP PROCEDURE dbo.InsertOrderDetails;
-GO
-
-CREATE PROCEDURE dbo.InsertOrderDetails
-    @OrderID INT,
-    @ProductID INT,
-    @UnitPrice DECIMAL(19, 4) = NULL,   --default NULL 
-    @Quantity INT,
-    @Discount DECIMAL(4, 2) = 0      --default 0
-AS
-BEGIN
-    SET NOCOUNT ON; --controls sending of DONE_IN_PROC message to client for each statement in stored procedure
-	--setting NOCOUNT to ON means that SQL server wont send count of affected rows after each operation
-
-    DECLARE @ProductUnitPrice DECIMAL(19, 4);
-    --DECLARE @ProductDiscount DECIMAL(4, 2) = 0;
-    DECLARE @UnitsInStock INT;
-    DECLARE @ReorderLevel INT;
-
-    -- Get the unit price from the product table if not provided
-    IF @UnitPrice IS NULL
-    BEGIN
-        SELECT @ProductUnitPrice = ListPrice
-        FROM Production.Product
-        WHERE ProductID = @ProductID;
-        
-        IF @ProductUnitPrice IS NULL
-        BEGIN
-            PRINT 'Product not found. Failed to place the order. Please try again.';
-            RETURN;
-        END
-    END
-    ELSE
-    BEGIN
-        SET @ProductUnitPrice = @UnitPrice;
-    END
-
-    -- Get the current stock and reorder level of the product
-    SELECT @UnitsInStock = Quantity, @ReorderLevel = @ReorderLevel
-    FROM Production.ProductInventory
-    WHERE ProductID = @ProductID;
-
-    -- Check if there is enough stock
-    IF @UnitsInStock IS NULL OR @UnitsInStock < @Quantity
-    BEGIN
-        PRINT 'Not enough product in stock. Failed to place the order. Please try again.';
-        RETURN;
-    END
-
-    -- Insert the order details
-    BEGIN TRANSACTION;
-    BEGIN TRY
-        INSERT INTO Sales.SalesOrderDetail (SalesOrderID, ProductID, UnitPrice, OrderQty, UnitPriceDiscount)
-        VALUES (@OrderID, @ProductID, @ProductUnitPrice, @Quantity, @Discount);
-
-        -- Check if the order was inserted
-        IF @@ROWCOUNT = 0
-        BEGIN
-            PRINT 'Failed to place the order. Please try again.';
-            ROLLBACK TRANSACTION;
-            RETURN;
-        END
-
-        -- Update the inventory
-        UPDATE Production.ProductInventory
-        SET @UnitsInStock = @UnitsInStock - @Quantity
-        WHERE ProductID = @ProductID;
-
-        -- Check if the stock level dropped below the reorder level
-        IF (@UnitsInStock - @Quantity) < @ReorderLevel
-        BEGIN
-            PRINT 'Quantity in stock of the product has dropped below its reorder level.';
-        END
-
-        COMMIT TRANSACTION;
-        PRINT 'Order details have been successfully inserted.';
-    END TRY
-    BEGIN CATCH
-        ROLLBACK TRANSACTION;
-        PRINT 'Failed to place the order. Please try again.';
-    END CATCH
-END;
-GO
+INSERT INTO ProjectList
+VALUES(1 ,'2015-10-01','2015-10-02'),
+      (2 ,'2015-10-02','2015-10-03'),
+	  (3 ,'2015-10-03','2015-10-04'),
+	  (4 ,'2015-10-13','2015-10-14'),
+	  (5 ,'2015-10-14','2015-10-15'),
+	  (6 ,'2015-10-28','2015-10-29'),
+	  (7 ,'2015-10-30','2015-10-31');
 
 
---executed for ProductID=2, OrderID = 1
-EXEC dbo.InsertOrderDetails @OrderID = 1, @ProductID = 2, @UnitPrice = 19.99, @Quantity =200;
+-- Common Table Expression (CTE) is a temporary result set 
+--that you can reference within a SELECT, INSERT, UPDATE, or DELETE statement. 
+--It is defined using the WITH keyword followed by a query.
 
 
+--CTEs are useful for improving the readability and structure of 
+--complex queries. They can be thought of as defining a temporary 
+--table that only exists for the duration of a single query.
 
- --UpdateOrderDetails procedure
+--PARTITION BY: Divides the result set into partitions to which the window function is applied.
+--ORDER BY: Defines the logical order of rows within each partition.
 
-GO
+--A window function performs a calculation across a set of table 
+--to the current row. Unlike regular aggregate functions, 
+--window functions do not cause rows to become grouped into a 
+--single output row. Instead, the rows retain their separate identities.
 
--- Drop the procedure if it already exists
-IF OBJECT_ID('dbo.UpdateDetails', 'P') IS NOT NULL
-DROP PROCEDURE dbo.UpdateDetails;
-GO
 
--- Create the UpdateDetails stored procedure
-CREATE PROCEDURE dbo.UpdateDetails
-    @OrderID INT,
-    @ProductID INT,
-    @UnitPrice DECIMAL(19, 4) = NULL,
-    @Quantity INT = NULL,
-    @Discount DECIMAL(4, 2) = NULL
-AS
-BEGIN
-    SET NOCOUNT ON;
+--approach : 1)check start date of current task and end date of prv task => if they are same then they are in same project
+--           2)add values set above =>tasks having same value are in same project
+--		   3)calculate min and max date according to same project (value added in prev step)
 
-    DECLARE @CurrentUnitPrice DECIMAL(19, 4);
-    DECLARE @CurrentQuantity INT;
-    DECLARE @CurrentDiscount DECIMAL(4, 2);
-
-    -- Retrieve the current values
+WITH TaskGroups AS (      --TaskGroups:CTE
     SELECT 
-        @CurrentUnitPrice = UnitPrice,
-        @CurrentQuantity = OrderQty,
-        @CurrentDiscount = UnitPriceDiscount
-    FROM Sales.SalesOrderDetail
-    WHERE SalesOrderID = @OrderID AND ProductID = @ProductID;
+        Task_ID,
+        Start_Date,
+        End_Date,
+        CASE                          --check if current task is starting right after previous task end date to check if this task is part of previous task
+            WHEN Start_Date = LAG(End_Date) OVER (ORDER BY Start_Date) 
+			THEN 0                   --start date of current task =end date of prev task indicates same project
+            ELSE 1                   --if task is of same proj then NewProject=0 otherwise 1
+        END AS NewProject
+    FROM 
+        ProjectList
+),
 
-    -- Check if the order detail exists
-    IF @CurrentUnitPrice IS NULL
-    BEGIN
-        PRINT 'Order detail not found. Please check OrderID and ProductID.';
-        RETURN;
-    END
+GroupedTasks AS (                    --temporary table
+    SELECT 
+        Task_ID,
+        Start_Date,
+        End_Date,
+        SUM(NewProject) OVER (ORDER BY Start_Date) AS ProjectGroup  --SUM() as window function        --groups tasks according to value of newProject as tasks having same value(sum) of newProject ..they are in same project
+    FROM 
+        TaskGroups
+),
 
-    -- Update the order details with provided values or retain the original if NULL
-    UPDATE Sales.SalesOrderDetail
-    SET 
-        UnitPrice = ISNULL(@UnitPrice, @CurrentUnitPrice),
-        OrderQty = ISNULL(@Quantity, @CurrentQuantity),
-        UnitPriceDiscount = ISNULL(@Discount, @CurrentDiscount)
-    WHERE SalesOrderID = @OrderID AND ProductID = @ProductID;
+ProjectBoundaries AS (                    --temporary table
+    SELECT 
+        ProjectGroup,
+        MIN(Start_Date) AS ProjectStart,
+        MAX(End_Date) AS ProjectEnd,
+        DATEDIFF(day, MIN(Start_Date), MAX(End_Date)) AS ProjectDuration      --calculates project duration 
+    FROM 
+        GroupedTasks
+    GROUP BY 
+        ProjectGroup
+)
 
-    -- Check if the update was successful
-    IF @@ROWCOUNT = 0
-    BEGIN
-        PRINT 'Failed to update the order details. Please try again.';
-        RETURN;
-    END
-
-    PRINT 'Order details have been successfully updated.';
-END;
-GO
-
-
-DECLARE @OrderID INT = 43659;  -- Replace with a valid SalesOrderID
-DECLARE @ProductID INT = 776;  -- Replace with a valid ProductID
-DECLARE @UnitPrice DECIMAL(19, 4) = 25.00;  -- New unit price (or NULL to retain old value)
-DECLARE @Quantity INT = 5;  -- New quantity (or NULL to retain old value)
-DECLARE @Discount DECIMAL(4, 2) = 0.10;  -- New discount (or NULL to retain old value)
-
-EXEC dbo.UpdateDetails @OrderID, @ProductID, @UnitPrice, @Quantity, @Discount;
-
-select * from Sales.SalesOrderDetail
-
---GetOrderDetails procedure
-
-GO
-
--- Drop the procedure if it already exists
-IF OBJECT_ID('dbo.GetOrderDetails', 'P') IS NOT NULL
-DROP PROCEDURE dbo.GetOrderDetails;
-GO
-
--- Create the GetOrderDetails stored procedure
-CREATE PROCEDURE dbo.GetOrderDetails
-    @OrderID INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Check if any records exist for the given OrderID
-    IF NOT EXISTS (SELECT 1 FROM Sales.SalesOrderDetail WHERE SalesOrderID = @OrderID)
-    BEGIN
-        PRINT 'The OrderID ' + CAST(@OrderID AS VARCHAR(10)) + ' does not exist.';
-        RETURN 1;
-    END
-
-    -- Return all records for the given OrderID
-    SELECT SalesOrderID, ProductID, UnitPrice, OrderQty, UnitPriceDiscount, ModifiedDate
-    FROM Sales.SalesOrderDetail
-    WHERE SalesOrderID = @OrderID;
-
-    RETURN 0;
-END;
-GO
-
-
-DECLARE @OrderID INT = 43659;  -- Replace with a valid SalesOrderID
-
-EXEC dbo.GetOrderDetails @OrderID;
-
-
---deleteOrderDetails procedure
-GO
-
--- Drop the procedure if it already exists
-IF OBJECT_ID('dbo.DeleteOrderDetails', 'P') IS NOT NULL
-DROP PROCEDURE dbo.DeleteOrderDetails;
-GO
-
--- Create the DeleteOrderDetails stored procedure
-CREATE PROCEDURE dbo.DeleteOrderDetails
-    @OrderID INT,
-    @ProductID INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Check if the order ID exists
-    IF NOT EXISTS (SELECT 1 FROM Sales.SalesOrderDetail WHERE SalesOrderID = @OrderID)
-    BEGIN
-        PRINT 'Invalid OrderID: ' + CAST(@OrderID AS VARCHAR(10));
-        RETURN -1;
-    END
-
-    -- Check if the product ID exists for the given order ID
-    IF NOT EXISTS (SELECT 1 FROM Sales.SalesOrderDetail WHERE SalesOrderID = @OrderID AND ProductID = @ProductID)
-    BEGIN
-        PRINT 'Invalid ProductID: ' + CAST(@ProductID AS VARCHAR(10)) + ' for OrderID: ' + CAST(@OrderID AS VARCHAR(10));
-        RETURN -1;
-    END
-
-    -- Delete the record from the Order Details table
-    DELETE FROM Sales.SalesOrderDetail
-    WHERE SalesOrderID = @OrderID AND ProductID = @ProductID;
-
-    -- Check if the delete operation was successful
-    IF @@ROWCOUNT = 0
-    BEGIN
-        PRINT 'Failed to delete the order detail. Please try again.';
-        RETURN -1;
-    END
-
-    PRINT 'Order detail has been successfully deleted.';
-    RETURN 0;
-END;
-GO
-
-
-DECLARE @OrderID INT = 43659; 
-DECLARE @ProductID INT = 776;  
-
-EXEC dbo.DeleteOrderDetails @OrderID, @ProductID;
-
-SELECT * FROM Sales.SalesOrderDetail
-
-
-
-
---functions
---format of date:MM/DD/YYYY
-
-GO
-
--- Drop the function if it already exists
-IF OBJECT_ID('dbo.FormatDate', 'FN') IS NOT NULL
-DROP FUNCTION dbo.FormatDate;
-GO
-
--- Create the FormatDate function
-CREATE FUNCTION dbo.FormatDate (@InputDate DATETIME)
-RETURNS VARCHAR(10)
-AS
-BEGIN
-    -- Return the date in MM/DD/YYYY format
-    RETURN FORMAT(@InputDate, 'MM/dd/yyyy');
-END;
-GO
-
---input
-DECLARE @TestDate DATETIME = GETDATE();
-
-SELECT dbo.FormatDate(@TestDate) AS FormattedDate;
-
-
---function for format of YYYYMMDD
-GO
-
--- Drop the function if it already exists
-IF OBJECT_ID('dbo.FormatDateYYYYMMDD', 'FN') IS NOT NULL
-DROP FUNCTION dbo.FormatDateYYYYMMDD;
-GO
-
--- Create the FormatDateYYYYMMDD function
-CREATE FUNCTION dbo.FormatDateYYYYMMDD (@InputDate DATETIME)
-RETURNS VARCHAR(8)
-AS
-BEGIN
-    -- Return the date in YYYYMMDD format
-    RETURN CONVERT(VARCHAR(8), @InputDate, 112);
-END;
-GO
-
---input
--- Example: Use the FormatDateYYYYMMDD function
-DECLARE @TestDate DATETIME = GETDATE();
-
-SELECT dbo.FormatDateYYYYMMDD(@TestDate) AS FormattedDate;
-
-
-
---view for customerOrderes
-USE AdventureWorks;
-GO
-
--- Drop the view if it already exists
-IF OBJECT_ID('dbo.vwCustomerOrders', 'V') IS NOT NULL
-DROP VIEW dbo.vwCustomerOrders;
-GO
-
--- Create the vwCustomerOrders view
-CREATE VIEW dbo.vwCustomerOrders
-AS
 SELECT 
-   -- c.Title,
-    o.SalesOrderID,
-    o.OrderDate,
-    od.ProductID,
-    p.Name,
-    od.OrderQty,
-    od.UnitPrice,
-    (od.OrderQty * od.UnitPrice) AS TotalPrice
+    ProjectStart,
+    ProjectEnd
 FROM 
-    Sales.Customer c
-JOIN 
-    Sales.SalesOrderHeader o ON c.CustomerID = o.SalesOrderID
-JOIN 
-    Sales.SalesOrderDetail od ON o.SalesOrderID = od.SalesOrderID
-JOIN 
-    Production.Product p ON od.ProductID = p.ProductID;
-GO
+    ProjectBoundaries
+ORDER BY 
+    ProjectDuration ASC, 
+    ProjectStart ASC;
 
-USE AdventureWorks;
-GO
 
--- Drop the view if it already exists
-IF OBJECT_ID('dbo.vwCustomerOrders_Yesterday', 'V') IS NOT NULL
-DROP VIEW dbo.vwCustomerOrders_Yesterday;
-GO
 
--- Create the vwCustomerOrders_Yesterday view
 
-CREATE VIEW dbo.vwCustomerOrders_Yesterday
-AS
+
+--task 2
+
+CREATE TABLE Friends
+( ID INT PRIMARY KEY,
+  Friend_ID INT
+)
+
+CREATE TABLE Students 
+(
+ ID INT PRIMARY KEY,
+ Name VARCHAR(255),
+ FOREIGN KEY (ID) REFERENCES Friends(ID)
+)
+
+CREATE TABLE Packages
+(
+  ID INT PRIMARY KEY,
+  Salary FLOAT,
+  FOREIGN KEY (ID) REFERENCES Friends(ID)
+)
+
+INSERT INTO Friends
+VALUES(1,2),
+      (2,3),
+	  (3,4),
+	  (4,1)
+
+INSERT INTO Students
+VALUES(1,'Ashley'),
+      (2,'Samantha'),
+	  (3,'Julia'),
+	  (4,'Scarlet')
+
+INSERT INTO Packages
+VALUES(1,15.20),
+      (2,10.06),
+	  (3,11.55),
+	  (4,12.12)
+
+SELECT * FROM Friends
+SELECT * FROM Students
+SELECT * FROM Packages;
+
+
+select s.ID,s.Name,f.Friend_ID,p1.Salary, p.Salary fSalary
+from Students s, Friends f ,Packages p,Packages p1
+where f.ID = s.ID
+AND p.ID = f.Friend_ID
+AND s.ID = p1.ID
+AND p1.Salary<p.Salary
+
+
+
+select s.Name
+from Students s, Friends f ,Packages p,Packages p1
+where f.ID = s.ID
+AND p.ID = f.Friend_ID
+AND s.ID = p1.ID
+AND p1.Salary<p.Salary
+order by p.Salary
+
+
+--task 3
+
+CREATE TABLE Functions 
+(
+ X INT,
+ Y INT
+)
+
+INSERT INTO Functions
+VALUES(20,20),
+      (20,20),
+      (20,21),
+      (23,22),
+      (22,23),
+      (21,20)
+
+SELECT * FROM Functions
+
+
+SELECT distinct f1.X,f1.Y FROM Functions f1 
+JOIN Functions f2
+ON f1.X = f2.Y AND f1.Y = f2.X
+where f1.X <= f1.Y
+ORDER BY f1.X
+
+
+--task 4
+--question unclear
+
+--task 5
+
+
+CREATE TABLE Hackers
+(
+  hacker_id INT,
+  name varchar(255)
+)
+
+
+CREATE TABLE Submissions
+(
+  submission_date DATE,
+  submission_id INT,
+  hacker_id INT,
+  score INT
+)
+
+INSERT INTO Hackers
+values (15758,'Rose'),
+       (20703,'Angela'),
+	   (36396,'Frank'),
+	   (38289,'Patrick'),
+	   (44065,'Lisa'),
+	   (53473,'Kimberly'),
+	   (62529,'Bonnie'),
+	   (79722,'Michael')
+
+INSERT INTO Submissions
+values ('2016-03-01',8494,20703,0),
+   ('2016-03-01',22403,53473,15),
+   ('2016-03-01',23965,79722,60),
+   ('2016-03-01',30173,36396,70),
+   ('2016-03-02',34928,20703,0),
+   ('2016-03-02',38740,15758,60),
+   ('2016-03-02',42769,79722,25),
+   ('2016-03-02',44364,79722,60),
+   ('2016-03-03',45440,20703,0),
+   ('2016-03-03',49050,36396,70),
+   ('2016-03-03',50273,79722,5)
+   
+
+select max(count)
+from(
+select s.submission_date,s.hacker_id, count(submission_date) count from Submissions s 
+group by s.submission_date, s.hacker_id
+order by 1, 2 asc) 
+as subquery;
+
+
+select * from Submissions
+
+
+truncate table Submissions;
+
+
+--task 7 : incomplete question
+
+--task 8
+CREATE TABLE OCCUPATIONS
+(
+ Name varchar(255),
+ Occupation varchar(255)
+)
+
+INSERT INTO OCCUPATIONS
+VALUES('Samantha','Doctor'),
+      ('Julia','Actor'),
+      ('Maria','Actor'),
+      ('Meera','Singer'),
+      ('Ashley','Professor'),
+      ('Ketty','Professor'),
+      ('Christeen','Professor'),
+      ('Jane','Actor'),
+      ('Jenny','Doctor'),
+      ('Priya','Singer')
+
+
 SELECT 
-    --c.CompanyName,
-    o.SalesOrderID,
-    o.OrderDate,
-    od.ProductID,
-    p.Name,
-    od.OrderQty,
-    od.UnitPrice,
-    (od.OrderQty * od.UnitPrice) AS TotalPrice
-FROM 
-    Sales.Customer c
-JOIN 
-    Sales.SalesOrderHeader o ON c.CustomerID = o.CustomerID
-JOIN 
-    Sales.SalesOrderDetail od ON o.SalesOrderID = od.SalesOrderID
-JOIN 
-     Production.Product p ON od.ProductID = p.ProductID;
-WHERE 
-    o.OrderDate = CAST(GETDATE() - 1 AS DATE);
-GO
+CASE 
+	WHEN occupation = 'Doctor' then name else null
+END as doctor ,
+CASE 
+	WHEN occupation = 'Professor' then name else null
+END as Professor ,
+CASE 
+	WHEN occupation = 'Actor' then name else null
+END as Actor 
+FROM OCCUPATIONS 
+ORDER BY name
 
---USE AdventureWorks;
-GO
+SELECT t1.name, t2.Name
+FROM OCCUPATIONS t1, OCCUPATIONS t2
+where t1.occupation = 'Doctor'
+and t2.occupation = 'Actor'
+and t1.rownum = t2.rownum
 
--- Drop the view if it already exists
---IF OBJECT_ID('dbo.MyProducts', 'V') IS NOT NULL
---DROP VIEW dbo.MyProducts;
---GO
 
--- Create the MyProducts view
---CREATE VIEW dbo.MyProducts
---AS
---SELECT 
---    o.SalesOrderID,
---    o.OrderDate,
---    od.ProductID,
---    p.Name,
---    od.OrderQty,
---    od.UnitPrice,
---    (od.OrderQty * od.UnitPrice) AS TotalPrice
---FROM 
---    Production.Product p
---JOIN 
---    Suppliers s ON p.SupplierID = s.SupplierID
---JOIN 
---    Categories c ON p.CategoryID = c.CategoryID
---WHERE 
---    p.Discontinued = 0;
---GO
+select * from OCCUPATIONS ORDER BY Occupation
+
+
+select name from OCCUPATIONS 
+where Occupation = 'Doctor'
 
 
 
+SELECT 
+    d.Name AS doctor,
+	p.Name AS Professor,
+    a.Name AS Actor
+FROM
+(SELECT 
+        name, 
+        ROW_NUMBER() OVER (ORDER BY name) AS RowNum
+     FROM 
+        Occupations 
+     WHERE 
+        occupation = 'doctor'
+ )  d
+ full join 
+(SELECT 
+        name, 
+        ROW_NUMBER() OVER (ORDER BY name) AS RowNum1
+     FROM 
+        Occupations 
+     WHERE 
+        occupation = 'Professor'
+) p
+on d.RowNum = p.RowNum1
+full join 
+( SELECT 
+        name, 
+        ROW_NUMBER() OVER (ORDER BY name) AS RowNum2
+     FROM 
+        Occupations 
+     WHERE 
+        occupation = 'Actor'
+) a
+on coalesce(d.RowNum,p.RowNum1)= a.RowNum2
+full join 
+(
+SELECT 
+        name, 
+        ROW_NUMBER() OVER (ORDER BY name) AS RowNum3
+     FROM 
+        Occupations
+     WHERE 
+        occupation = 'Singer'
+) s
+on coalesce(a.RowNum2,p.RowNum1)= s.RowNum3;
 
---Trigger
---delete trigger
+--task 9
+create table BST
+(
+N INT,
+P INT
+)
+insert into BST
+values(1,2),
+(3,2),
+(6,8),
+(9,8),
+(2,5),
+(8,5),
+(5,null)
 
-GO
+select N,
+case
+	WHEN P is null then 'Root'
+	WHEN P is NOT NULL AND N IS NOT NULL AND P = (select N from BST where P is null) then 'Inner'
+	else 'Leaf'
+END
+from BST order by N
 
--- Drop the trigger if it already exists
-IF OBJECT_ID('dbo.trgDeleteOrder', 'TR') IS NOT NULL
-DROP TRIGGER dbo.trgDeleteOrder;
-GO
+--task 10
 
--- Create the DELETE trigger on Orders table
-CREATE TRIGGER Sales.trgDeleteOrder
-ON Sales.SalesOrderdetail
-FOR DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
+CREATE TABLE Company 
+(
+  company_code varchar(255),
+  founder varchar(255)
+)
+CREATE TABLE Lead_Manager
+(
+   lead_manager_code varchar(255),
+   company_code varchar(255)
+)
+CREATE TABLE Senior_Manager
+(
+   senior_manager_code varchar(255),
+   lead_manager_code varchar(255),
+   company_code varchar(255)
+)
+CREATE TABLE Manager
+(
+  manager_code varchar(255),
+  senior_manager_code varchar(255),
+  lead_manager_code varchar(255),
+  company_code varchar(255)
+)
+CREATE TABLE Employee
+(
+  employee_code varchar(255),
+  manager_code varchar(255),
+  senior_manager_code varchar(255),
+  lead_manager_code varchar(255),
+  company_code varchar(255)
+)
+INSERT INTO Company
+VALUES('C1','Monika'),
+      ('C2','Samantha')
 
-    -- Delete corresponding entries in the Order Details table
-    DELETE od
-    FROM Sales.SalesOrderDetail od
-    INNER JOIN deleted d ON od.SalesOrderID = d.SalesOrderID;
+INSERT INTO Lead_Manager
+VALUES('LM1','C1'),
+      ('LM2','C2')
+INSERT INTO Senior_Manager
+VALUES('SM1','LM1','C1'),
+      ('SM2','LM1','C1'),
+	  ('SM3','LM2','C2')
 
-END;
-GO
+INSERT INTO Manager
+VALUES('M1','SM1','LM1','C1'),
+      ('M2','SM3','LM2','C2'),
+	  ('M3','SM3','LM2','C2')
 
---insert trigger on order details table
-GO
+INSERT INTO Employee
+VALUES('E1','M1','SM1','LM1','C1'),
+      ('E2','M1','SM1','LM1','C1'),
+	  ('E3','M2','SM3','LM2','C2'),
+	  ('E4','M3','SM3','LM2','C2')
 
--- Drop the trigger if it already exists
-IF OBJECT_ID('dbo.trgInsertOrderDetails', 'TR') IS NOT NULL
-DROP TRIGGER dbo.trgInsertOrderDetails;
-GO
+SELECT * FROM Company
+SELECT * FROM Lead_Manager
+SELECT * FROM Senior_Manager
+SELECT * FROM Manager
+SELECT * FROM Employee;
 
--- Create the INSERT trigger on Order Details table
-CREATE TRIGGER Sales.trgInsertOrderDetails
-ON Sales.SalesOrderDetail
-FOR INSERT
-AS
-BEGIN
-    SET NOCOUNT ON;
 
-    DECLARE @ProductID INT;
-    DECLARE @OrderQty INT;
-    DECLARE @UnitsInStock INT;
+select cd.company_code,
+       cd.founder,
+	   cd.count_lead_manager,
+	   sd.count_seniorm,
+	   sd.count_manager,
+	   ed.count_emp
+from 
+ (  
+  select c.company_code, c.founder,
+  count(distinct l.lead_manager_code) count_lead_manager 
+  from Company c 
 
-    -- Get the ProductID and Quantity of the inserted order
-    SELECT @ProductID = i.ProductID, @OrderQty = i.Quantity
-    FROM inserted i;
+  inner join 
 
-    -- Get the UnitsInStock for the product
-    SELECT @UnitsInStock = p.UnitsInStock
-    FROM Production.Product p
-    WHERE p.ProductID = @ProductID;
+  Lead_Manager l
+  on c.company_code = l.company_code
+  group by c.company_code,c.founder
+  )cd
 
-    -- Check if there is sufficient stock
-    IF @UnitsInStock < @OrderQty
-    BEGIN
-        -- Rollback the transaction and raise an error
-        ROLLBACK;
-        RAISERROR ('Order could not be filled because of insufficient stock.', 16, 1);
-    END
-    ELSE
-    BEGIN
-        -- Decrement the stock
-        UPDATE Production.Product
-        SET UnitsInStock = UnitsInStock - @OrderQty
-        WHERE ProductID = @ProductID;
-    END;
-END;
-GO
+  inner join
+  (
+  select s.company_code, 
+  count(distinct s.senior_manager_code) count_seniorm,
+  count(distinct m.manager_code) count_manager 
+  from Senior_Manager s 
+  
+  inner join 
+  Manager m 
+  on s.company_code = m.company_code
+  group by s.company_code
+  )sd
+  on cd.company_code = sd.company_code
+  
+  inner join
+  (
+  select e.company_code,count(distinct e.employee_code) count_emp
+  from Employee e
+  group by e.company_code
+  )ed
+  on sd.company_code = ed.company_code
+  
+ 
+--task 11
+--solution is same like task 2
+
+--task 12 : 
+--dataset not found
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
